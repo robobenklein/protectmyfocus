@@ -10,7 +10,7 @@ active = True
 
 def enqueue_output(out, queue):
     for line in iter(out.readline, b''):
-        strd = line.decode('utf-8').strip()
+        strd = line.decode('utf-8').rstrip()
         # log.debug(strd)
         queue.put(strd)
     out.close()
@@ -18,7 +18,9 @@ def enqueue_output(out, queue):
 class FocusProtector():
     def __init__(self):
         self.xprop_listener = subprocess.Popen(
-            ['xprop', '-spy', '-root', '_NET_ACTIVE_WINDOW'],
+            ['xprop', '-root', '-spy',
+            '\t$0+\n', '_NET_ACTIVE_WINDOW',
+            '\t$0+\n', '_NET_CLIENT_LIST_STACKING'],
             stdout=subprocess.PIPE
         )
         self.output_queue = Queue()
@@ -29,17 +31,48 @@ class FocusProtector():
         self.output_queueing_thread.daemon = True
 
         self._NET_ACTIVE_WINDOW = None
+        self._NET_ACTIVE_WINDOW = self.get_active_windowid()
+        log.debug(f"Init _NET_ACTIVE_WINDOW: {self._NET_ACTIVE_WINDOW}")
         self._NET_CLIENT_LIST_STACKING = self.get_stacking_list()
+        log.debug(f"Init _NET_CLIENT_LIST_STACKING: {self._NET_CLIENT_LIST_STACKING}")
+
+    def parse_client_list_stacking(self, line):
+        slist = ( line.split("\t") )[-1]
+        winlist = slist.split(', ')
+        return winlist
 
     def get_stacking_list(self):
         p = subprocess.run(
-            ['xprop', '-root', '_NET_CLIENT_LIST_STACKING'],
+            ['xprop', '-root', '\\t$0+\\n', '_NET_CLIENT_LIST_STACKING'],
             stdout=subprocess.PIPE
         )
-        slist = p.stdout.decode('utf-8').strip().split('# ')[-1]
-        log.debug(slist)
-        winlist = slist.split(', ')
-        return winlist
+        return self.parse_client_list_stacking(p.stdout.decode('utf-8').rstrip())
+
+    def get_window_name(self, windowid):
+        p = subprocess.run(
+            ['xprop', '-id', windowid, '\\t$0+\\n', 'WM_CLASS'],
+            stdout=subprocess.PIPE
+        )
+        l = [x for x in p.stdout.decode('utf-8').rstrip().split('"') if x]
+        # log.debug(l)
+        try:
+            return l[-1]
+        except IndexError as e:
+            log.err(f"Failed to get name for window {windowid}")
+            # log.err(e)
+            log.err(f"xprop output: {p.stdout.decode('utf-8').rstrip()}")
+            return '???'
+
+    def get_active_windowid(self):
+        p = subprocess.run(
+            ['xprop', '-root', '\t$0\n', '_NET_ACTIVE_WINDOW'],
+            stdout=subprocess.PIPE
+        )
+        return p.stdout.decode('utf-8').rstrip().split('\t')[-1]
+
+    def get_windowid_str(self, windowid):
+        name = self.get_window_name(windowid)
+        return f"{name}/{windowid}"
 
     def set_window_focus(self, windowid):
         p = subprocess.run(
@@ -48,31 +81,43 @@ class FocusProtector():
         p.check_returncode()
 
     def xprop_event(self, event):
-        event_type = event.split(' ')[0]
-        # log.debug(f"event: {event_type}")
+        event_type = event.split('\t')[0]
+        log.debug("event:" + str(event.split('\t')[0]))
 
-        if event_type == "_NET_ACTIVE_WINDOW(WINDOW):":
+        if event_type == "_NET_ACTIVE_WINDOW(WINDOW)":
             # _NET_ACTIVE_WINDOW(WINDOW): window id # 0x76000b9
-            windowid = event.split(' ')[-1]
-            self.active_window_changed(windowid)
-        # elif event_type == "_NET_CLIENT_LIST(WINDOW):":
-        #     log.info("Client list updated.")
-        # elif event_type == "_NET_CLIENT_LIST_STACKING(WINDOW):":
-        #     log.info("Stacking list updated.")
+            windowid = event.split('\t')[-1]
+            log.debug(f"_NET_ACTIVE_WINDOW event to {self.get_windowid_str(windowid)}")
+            self.active_window_changed(windowid, self.get_stacking_list())
+        elif event_type == "_NET_CLIENT_LIST_STACKING(WINDOW)":
+            newstack = self.parse_client_list_stacking(event)
+            log.debug(f"_NET_CLIENT_LIST_STACKING, top: {newstack[-4:]}")
+            # windowid = newstack[-1]
+            self.active_window_changed(self._NET_ACTIVE_WINDOW, newstack)
 
-    def active_window_changed(self, windowid):
-        log.info(f"Window focus changed to window {windowid}")
-        # log.debug(windowid)
-        newstack = self.get_stacking_list()
+    def active_window_changed(self, windowid, newstack):
+        # log.debug(f"Window focus changed to window {self.get_windowid_str(windowid)}")
+        if (windowid == self._NET_ACTIVE_WINDOW and newstack == self._NET_CLIENT_LIST_STACKING):
+            log.debug(f"Event with no change detected.")
+            return
+        stacking_index = None
+        try:
+            stacking_index = newstack.index(windowid)
+            stacking_index_from_top = stacking_index - len(newstack)
+        except ValueError:
+            log.warn(f"Window {windowid} no longer exists in stacking index! Ignoring this focus change.")
+            log.warn(f"newstack: {newstack}")
+            return
+        log.debug(f"Window is index {stacking_index} ({stacking_index_from_top}) of {len(newstack)} in stack")
         # log.info(f"Window stack currently: {newstack}")
         if len(newstack) > len(self._NET_CLIENT_LIST_STACKING):
-            log.info("Window creation detected! Focusing previous window!")
+            log.info(f"Window creation detected! Focusing previous {self.get_windowid_str(self._NET_ACTIVE_WINDOW)}")
             try:
                 self.set_window_focus(self._NET_ACTIVE_WINDOW)
             except subprocess.CalledProcessError as e:
                 log.err(f"Could not re-focus the previous window! previous: {self._NET_ACTIVE_WINDOW} new: {windowid}")
         elif len(newstack) == len(self._NET_CLIENT_LIST_STACKING):
-            log.debug("Window focus changed.")
+            log.info(f"Window focus changed from {self.get_windowid_str(self._NET_ACTIVE_WINDOW)} to {self.get_windowid_str(windowid)}")
         else:
             log.info("Window lost.")
         self._NET_CLIENT_LIST_STACKING = newstack
@@ -86,6 +131,8 @@ class FocusProtector():
             except Empty:
                 # log.debug("waiting for input...")
                 pass
+            except Exception as e:
+                log.err(e)
             else:
                 self.xprop_event(rawline)
 
@@ -99,3 +146,4 @@ if __name__ == '__main__':
         fp.mainloop()
     except KeyboardInterrupt as e:
         fp.quit()
+        raise e
