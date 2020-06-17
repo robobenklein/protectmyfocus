@@ -30,11 +30,22 @@ class FocusProtector():
         )
         self.output_queueing_thread.daemon = True
 
+        self._WM_CLASS_MAP = {}
+        self.update_wm_class_map()
         self._NET_ACTIVE_WINDOW = None
         self._NET_ACTIVE_WINDOW = self.get_active_windowid()
-        log.debug(f"Init _NET_ACTIVE_WINDOW: {self._NET_ACTIVE_WINDOW}")
+        log.debug(f"Init _NET_ACTIVE_WINDOW: {self.get_windowid_str(self._NET_ACTIVE_WINDOW)}")
         self._NET_CLIENT_LIST_STACKING = self.get_stacking_list()
         log.debug(f"Init _NET_CLIENT_LIST_STACKING: {self._NET_CLIENT_LIST_STACKING}")
+
+
+    def update_wm_class_map(self, windowid=None):
+        if windowid:
+            self._WM_CLASS_MAP[windowid] = self.get_window_name(windowid)
+            return self._WM_CLASS_MAP[windowid]
+        else:
+            for c in self.get_stacking_list():
+                self._WM_CLASS_MAP[c] = self.get_window_name(c)
 
     def parse_client_list_stacking(self, line):
         slist = ( line.split("\t") )[-1]
@@ -51,7 +62,8 @@ class FocusProtector():
     def get_window_name(self, windowid):
         p = subprocess.run(
             ['xprop', '-id', windowid, '\\t$0+\\n', 'WM_CLASS'],
-            stdout=subprocess.PIPE
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
         l = [x for x in p.stdout.decode('utf-8').rstrip().split('"') if x]
         # log.debug(l)
@@ -60,7 +72,8 @@ class FocusProtector():
         except IndexError as e:
             log.err(f"Failed to get name for window {windowid}")
             # log.err(e)
-            log.err(f"xprop output: {p.stdout.decode('utf-8').rstrip()}")
+            log.err(f"xprop stdout: {p.stdout.decode('utf-8').rstrip()}")
+            log.err(f"xprop stderr: {p.stderr.decode('utf-8').rstrip()}")
             return '???'
 
     def get_active_windowid(self):
@@ -71,8 +84,13 @@ class FocusProtector():
         return p.stdout.decode('utf-8').rstrip().split('\t')[-1]
 
     def get_windowid_str(self, windowid):
-        name = self.get_window_name(windowid)
-        return f"{name}/{windowid}"
+        name = None
+        try:
+            name = self._WM_CLASS_MAP[windowid]
+        except KeyError:
+            name = self.update_wm_class_map(windowid)
+        finally:
+            return f"{name}/{windowid}"
 
     def set_window_focus(self, windowid):
         p = subprocess.run(
@@ -100,18 +118,23 @@ class FocusProtector():
         if (windowid == self._NET_ACTIVE_WINDOW and newstack == self._NET_CLIENT_LIST_STACKING):
             log.debug(f"Event with no change detected.")
             return
+
         stacking_index = None
         try:
             stacking_index = newstack.index(windowid)
             stacking_index_from_top = stacking_index - len(newstack)
         except ValueError:
-            log.warn(f"Window {windowid} no longer exists in stacking index! Ignoring this focus change.")
+            log.warn(f"Window {self.get_windowid_str(windowid)} no longer exists in stacking index! Ignoring this focus change.")
             log.warn(f"newstack: {newstack}")
             return
         log.debug(f"Window is index {stacking_index} ({stacking_index_from_top}) of {len(newstack)} in stack")
         # log.info(f"Window stack currently: {newstack}")
         if len(newstack) > len(self._NET_CLIENT_LIST_STACKING):
-            log.info(f"Window creation detected! Focusing previous {self.get_windowid_str(self._NET_ACTIVE_WINDOW)}")
+            new_windows = [x for x in newstack if x not in set(self._NET_CLIENT_LIST_STACKING)]
+            for w in new_windows:
+                self.update_wm_class_map(w)
+                log.info(f"New window: {self.get_windowid_str(w)}")
+            log.info(f"Focusing previous focus holder: {self.get_windowid_str(self._NET_ACTIVE_WINDOW)}")
             try:
                 self.set_window_focus(self._NET_ACTIVE_WINDOW)
             except subprocess.CalledProcessError as e:
@@ -119,7 +142,10 @@ class FocusProtector():
         elif len(newstack) == len(self._NET_CLIENT_LIST_STACKING):
             log.info(f"Window focus changed from {self.get_windowid_str(self._NET_ACTIVE_WINDOW)} to {self.get_windowid_str(windowid)}")
         else:
-            log.info("Window lost.")
+            old_windows = [x for x in self._NET_CLIENT_LIST_STACKING if x not in set(newstack)]
+            for w in old_windows:
+                log.info(f"Window destroyed: {self.get_windowid_str(w)}")
+            log.info(f"{self.get_windowid_str(windowid)} inherits focus.")
         self._NET_CLIENT_LIST_STACKING = newstack
         self._NET_ACTIVE_WINDOW = windowid
 
