@@ -18,7 +18,7 @@ def enqueue_output(out, queue):
 class FocusProtector():
     def __init__(self):
         self.xprop_listener = subprocess.Popen(
-            ['xprop', '-spy', '-root'],
+            ['xprop', '-spy', '-root', '_NET_ACTIVE_WINDOW'],
             stdout=subprocess.PIPE
         )
         self.output_queue = Queue()
