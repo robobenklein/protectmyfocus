@@ -172,4 +172,4 @@ if __name__ == '__main__':
         fp.mainloop()
     except KeyboardInterrupt as e:
         fp.quit()
-        raise e
+        # raise e

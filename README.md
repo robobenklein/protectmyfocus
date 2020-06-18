@@ -11,3 +11,11 @@ Clone and run the `protectmyfocus.py` script with python 3.
 Requires `wmctrl`, `xprop` to be available.
 
 Tested on Pop!_OS 20.04
+
+# Caveats
+
+Fullscreen games that misbehave when focus is lost may not play well with this program. It's recommended to run either in borderless mode or make sure that Alt-Tabbing in and out of the game works without issues before using this program.
+
+# A better approach
+
+If I were some kind of expert with X.Org X11 and could find each and every call to a window management function that Steam, Discord, etc. actually make, then I'd probably have written a C/C++ wrapper / library call interceptor.
