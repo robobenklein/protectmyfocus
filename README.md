@@ -6,11 +6,27 @@ Since Gnome Shell hasn't actually fixed their window focus behaviour, we can't r
 
 # Usage
 
+Install requirements with pip: `pip3 install -r requirements.txt`
+
 Clone and run the `protectmyfocus.py` script with python 3.
 
-Requires `wmctrl`, `xprop` to be available.
+Requires `wmctrl`, `xprop` to be available. (`sudo apt install x11-utils wmctrl`)
 
 Tested on Pop!_OS 20.04
+
+# Config
+
+To find the class name of a window, just read the output of the program and copy the name before the `/` in a window ID.
+
+### Whitelist
+
+Windows matching the classes in this list will always be allowed to gain focus.
+
+### Startup time
+
+`[startuptime]` is a set of class names along with how long that application's window should be prevented from gaining focus after it's been created.
+
+E.x. `Steam = 2.0` means that all Steam windows will not be allowed to steal focus for 2 seconds after they've been created.
 
 # Caveats
 
