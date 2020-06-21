@@ -205,7 +205,7 @@ class FocusProtector():
         self.output_queueing_thread.start()
         while True:
             try:
-                rawline = self.output_queue.get_nowait()
+                rawline = self.output_queue.get()
             except Empty:
                 # log.debug("waiting for input...")
                 pass
