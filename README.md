@@ -6,9 +6,11 @@ Since Gnome Shell hasn't actually fixed their window focus behaviour, we can't r
 
 # Usage
 
+Clone / download this repo.
+
 Install requirements with pip: `pip3 install -r requirements.txt`
 
-Clone and run the `protectmyfocus.py` script with python 3.
+Run the `protectmyfocus.py` script with python 3.
 
 Requires `wmctrl`, `xprop` to be available. (`sudo apt install x11-utils wmctrl`)
 
