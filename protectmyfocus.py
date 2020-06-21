@@ -1,12 +1,20 @@
 
 import select
 import subprocess
-import log
+import time
+import argparse
+from collections import deque
 from queue import Queue, Empty
 from threading import Thread
 
-log.setLevel(log.DEBUG)
-active = True
+import toml
+import log
+
+t_startup = time.time()
+
+# number of focus switches within 1 second to classify a bad actor window
+# (e.x. the Steam "exiting" dialog focuses itself when any other steam window gains focus)
+DoS_trigger_count = 55
 
 def enqueue_output(out, queue):
     for line in iter(out.readline, b''):
@@ -16,13 +24,23 @@ def enqueue_output(out, queue):
     out.close()
 
 class FocusProtector():
-    def __init__(self):
+    def __init__(self, config = None):
         self.xprop_listener = subprocess.Popen(
             ['xprop', '-root', '-spy',
             '\t$0+\n', '_NET_ACTIVE_WINDOW',
             '\t$0+\n', '_NET_CLIENT_LIST_STACKING'],
             stdout=subprocess.PIPE
         )
+        self.config = toml.load(config)
+        log.debug(self.config)
+        try:
+            if "startuptime" not in self.config:
+                self.config["startuptime"] = {}
+            if "whitelist" not in self.config:
+                self.config["whitelist"] = []
+        except AssertionError as e:
+            log.err(e)
+            raise e
         self.output_queue = Queue()
         self.output_queueing_thread = Thread(
             target=enqueue_output,
@@ -30,22 +48,27 @@ class FocusProtector():
         )
         self.output_queueing_thread.daemon = True
 
-        self._WM_CLASS_MAP = {}
-        self.update_wm_class_map()
+        self._WM_CLASS_MAP = {} # id to name
+        self._WM_CREATED_TIME = {} # id to created epoch time
         self._NET_ACTIVE_WINDOW = None
+        self.dos_detect_queue = deque([0.0] * DoS_trigger_count, DoS_trigger_count)
+
+        self.update_wm_class_map()
         self._NET_ACTIVE_WINDOW = self.get_active_windowid()
         log.debug(f"Init _NET_ACTIVE_WINDOW: {self.get_windowid_str(self._NET_ACTIVE_WINDOW)}")
         self._NET_CLIENT_LIST_STACKING = self.get_stacking_list()
         log.debug(f"Init _NET_CLIENT_LIST_STACKING: {self._NET_CLIENT_LIST_STACKING}")
 
+        for cid in self._NET_CLIENT_LIST_STACKING:
+            self._WM_CREATED_TIME[cid] = 0.0
 
     def update_wm_class_map(self, windowid=None):
         if windowid:
-            self._WM_CLASS_MAP[windowid] = self.get_window_name(windowid)
+            self._WM_CLASS_MAP[windowid] = self.get_window_classname(windowid)
             return self._WM_CLASS_MAP[windowid]
         else:
             for c in self.get_stacking_list():
-                self._WM_CLASS_MAP[c] = self.get_window_name(c)
+                self._WM_CLASS_MAP[c] = self.get_window_classname(c)
 
     def parse_client_list_stacking(self, line):
         slist = ( line.split("\t") )[-1]
@@ -59,7 +82,9 @@ class FocusProtector():
         )
         return self.parse_client_list_stacking(p.stdout.decode('utf-8').rstrip())
 
-    def get_window_name(self, windowid):
+    def get_window_classname(self, windowid):
+        if windowid in self._WM_CLASS_MAP:
+            return self._WM_CLASS_MAP[windowid]
         p = subprocess.run(
             ['xprop', '-id', windowid, '\\t$0+\\n', 'WM_CLASS'],
             stdout=subprocess.PIPE,
@@ -93,6 +118,12 @@ class FocusProtector():
             return f"{name}/{windowid}"
 
     def set_window_focus(self, windowid):
+        n = time.time()
+        self.dos_detect_queue.append(n)
+        if self.dos_detect_queue[0] > (n - 1.0):
+            log.warn(f"Focus steal DoS prevention! More than {DoS_trigger_count} attempts to regain focus in the last second.")
+            log.debug(f"DoS queue: {self.dos_detect_queue}")
+            return
         p = subprocess.run(
             ['wmctrl', '-i', '-a', windowid],
         )
@@ -113,7 +144,12 @@ class FocusProtector():
             # windowid = newstack[-1]
             self.active_window_changed(self._NET_ACTIVE_WINDOW, newstack)
 
+    def handle_new_window(self, wid):
+        self.update_wm_class_map(wid)
+        self._WM_CREATED_TIME[wid] = time.time()
+
     def active_window_changed(self, windowid, newstack):
+        allow_new_focus = True
         # log.debug(f"Window focus changed to window {self.get_windowid_str(windowid)}")
         if (windowid == self._NET_ACTIVE_WINDOW and newstack == self._NET_CLIENT_LIST_STACKING):
             log.debug(f"Event with no change detected.")
@@ -132,22 +168,38 @@ class FocusProtector():
         if len(newstack) > len(self._NET_CLIENT_LIST_STACKING):
             new_windows = [x for x in newstack if x not in set(self._NET_CLIENT_LIST_STACKING)]
             for w in new_windows:
-                self.update_wm_class_map(w)
+                self.handle_new_window(w)
                 log.info(f"New window: {self.get_windowid_str(w)}")
-            log.info(f"Focusing previous focus holder: {self.get_windowid_str(self._NET_ACTIVE_WINDOW)}")
-            try:
-                self.set_window_focus(self._NET_ACTIVE_WINDOW)
-            except subprocess.CalledProcessError as e:
-                log.err(f"Could not re-focus the previous window! previous: {self._NET_ACTIVE_WINDOW} new: {windowid}")
+            wname = self.get_window_classname(windowid)
+            if wname in self.config["whitelist"]:
+                log.info(f"{self.get_windowid_str(windowid)} is in whitelist, allowing.")
+            elif wname == self.get_window_classname(self._NET_ACTIVE_WINDOW):
+                # allow automated focus between windows of the same application:
+                log.info(f"Allowing {self.get_windowid_str(self._NET_ACTIVE_WINDOW)} to {self.get_windowid_str(windowid)} since they are the same class.")
+            else:
+                log.info(f"Focusing previous focus holder: {self.get_windowid_str(self._NET_ACTIVE_WINDOW)}")
+                try:
+                    self.set_window_focus(self._NET_ACTIVE_WINDOW)
+                    allow_new_focus = False
+                except subprocess.CalledProcessError as e:
+                    log.err(f"Could not re-focus the previous window! previous: {self._NET_ACTIVE_WINDOW} new: {windowid}")
         elif len(newstack) == len(self._NET_CLIENT_LIST_STACKING):
             log.info(f"Window focus changed from {self.get_windowid_str(self._NET_ACTIVE_WINDOW)} to {self.get_windowid_str(windowid)}")
+            wname = self.get_window_classname(windowid)
+            if wname not in self.config["whitelist"] and wname in self.config["startuptime"]:
+                if time.time() <= self.config["startuptime"][wname] + self._WM_CREATED_TIME[windowid]:
+                    log.info(f"Preventing focus of {self.get_windowid_str(windowid)}, which is still within startup timeout.")
+                    self.set_window_focus(self._NET_ACTIVE_WINDOW)
+                    allow_new_focus = False
         else:
             old_windows = [x for x in self._NET_CLIENT_LIST_STACKING if x not in set(newstack)]
             for w in old_windows:
                 log.info(f"Window destroyed: {self.get_windowid_str(w)}")
             log.info(f"{self.get_windowid_str(windowid)} inherits focus.")
+        log.debug("Setting new _NET_ACTIVE_WINDOW and _NET_CLIENT_LIST_STACKING")
         self._NET_CLIENT_LIST_STACKING = newstack
-        self._NET_ACTIVE_WINDOW = windowid
+        if allow_new_focus:
+            self._NET_ACTIVE_WINDOW = windowid
 
     def mainloop(self):
         self.output_queueing_thread.start()
@@ -165,10 +217,30 @@ class FocusProtector():
     def quit(self):
         self.xprop_listener.terminate()
 
-fp = FocusProtector()
+fp = None
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "-c", "--config",
+        type=str,
+        help="Config file",
+        required=False,
+        default="config.toml"
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Verbosity increase"
+    )
+
+    args = parser.parse_args()
+    if (args.verbose):
+        log.setLevel(log.DEBUG)
+
     try:
+        fp = FocusProtector(args.config)
         fp.mainloop()
     except KeyboardInterrupt as e:
         fp.quit()

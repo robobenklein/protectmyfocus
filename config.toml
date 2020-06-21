@@ -1,0 +1,9 @@
+
+whitelist = [
+  "Tilix"
+]
+
+# time to prevent focus in seconds after the window gets created
+[startuptime]
+Steam = 2.0
+discord = 5.0
