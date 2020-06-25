@@ -14,7 +14,7 @@ t_startup = time.time()
 
 # number of focus switches within 1 second to classify a bad actor window
 # (e.x. the Steam "exiting" dialog focuses itself when any other steam window gains focus)
-DoS_trigger_count = 55
+DoS_trigger_count = 25
 
 def enqueue_output(out, queue):
     for line in iter(out.readline, b''):
