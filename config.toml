@@ -1,6 +1,9 @@
 
 whitelist = [
-  "Tilix"
+  "Tilix",
+  "Org.gnome.Nautilus",
+  "Pavucontrol",
+  "SC Controller",
 ]
 
 # time to prevent focus in seconds after the window gets created

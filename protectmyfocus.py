@@ -149,7 +149,7 @@ class FocusProtector():
         self._WM_CREATED_TIME[wid] = time.time()
 
     def active_window_changed(self, windowid, newstack):
-        allow_new_focus = True
+        allowed_new_focus = True
         # log.debug(f"Window focus changed to window {self.get_windowid_str(windowid)}")
         if (windowid == self._NET_ACTIVE_WINDOW and newstack == self._NET_CLIENT_LIST_STACKING):
             log.debug(f"Event with no change detected.")
@@ -180,17 +180,19 @@ class FocusProtector():
                 log.info(f"Focusing previous focus holder: {self.get_windowid_str(self._NET_ACTIVE_WINDOW)}")
                 try:
                     self.set_window_focus(self._NET_ACTIVE_WINDOW)
-                    allow_new_focus = False
+                    allowed_new_focus = False
                 except subprocess.CalledProcessError as e:
                     log.err(f"Could not re-focus the previous window! previous: {self._NET_ACTIVE_WINDOW} new: {windowid}")
         elif len(newstack) == len(self._NET_CLIENT_LIST_STACKING):
             log.info(f"Window focus changed from {self.get_windowid_str(self._NET_ACTIVE_WINDOW)} to {self.get_windowid_str(windowid)}")
             wname = self.get_window_classname(windowid)
-            if wname not in self.config["whitelist"] and wname in self.config["startuptime"]:
+            if wname == self.get_window_classname(self._NET_ACTIVE_WINDOW):
+                log.info(f"Allowing {self.get_windowid_str(self._NET_ACTIVE_WINDOW)} to {self.get_windowid_str(windowid)} since they are the same class.")
+            elif wname not in self.config["whitelist"] and wname in self.config["startuptime"]:
                 if time.time() <= self.config["startuptime"][wname] + self._WM_CREATED_TIME[windowid]:
                     log.info(f"Preventing focus of {self.get_windowid_str(windowid)}, which is still within startup timeout.")
                     self.set_window_focus(self._NET_ACTIVE_WINDOW)
-                    allow_new_focus = False
+                    allowed_new_focus = False
         else:
             old_windows = [x for x in self._NET_CLIENT_LIST_STACKING if x not in set(newstack)]
             for w in old_windows:
@@ -198,7 +200,7 @@ class FocusProtector():
             log.info(f"{self.get_windowid_str(windowid)} inherits focus.")
         log.debug("Setting new _NET_ACTIVE_WINDOW and _NET_CLIENT_LIST_STACKING")
         self._NET_CLIENT_LIST_STACKING = newstack
-        if allow_new_focus:
+        if allowed_new_focus:
             self._NET_ACTIVE_WINDOW = windowid
 
     def mainloop(self):
